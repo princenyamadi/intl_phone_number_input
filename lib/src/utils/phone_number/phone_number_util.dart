@@ -31,14 +31,30 @@ class PhoneNumberUtil {
       {required String phoneNumber, required String isoCode}) async {
     final number = phoneUtil.parse(phoneNumber, isoCode.toUpperCase());
     final regionCode = phoneUtil.getRegionCodeForNumber(number);
-    final countryCode = number.countryCode.toString();
+    // Include the leading '+' so this matches `Country.dialCode` everywhere.
+    final countryCode = '+${number.countryCode}';
     final formattedNumber =
         phoneUtil.format(number, p.PhoneNumberFormat.national);
     return RegionInfo(
       regionPrefix: countryCode,
       isoCode: regionCode,
       formattedPhoneNumber: formattedNumber,
+      nationalNumber: phoneUtil.getNationalSignificantNumber(number),
     );
+  }
+
+  /// Returns the national significant number (the subscriber digits, with any
+  /// country code and national trunk prefix removed) for [phoneNumber].
+  ///
+  /// Returns `null` when the number cannot be parsed.
+  static Future<String?> getNationalSignificantNumber(
+      {required String phoneNumber, required String isoCode}) async {
+    try {
+      final number = phoneUtil.parse(phoneNumber, isoCode.toUpperCase());
+      return phoneUtil.getNationalSignificantNumber(number);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Accepts [phoneNumber] and [isoCode]
@@ -74,25 +90,36 @@ class RegionInfo {
   String? isoCode;
   String? formattedPhoneNumber;
 
-  RegionInfo({this.regionPrefix, this.isoCode, this.formattedPhoneNumber});
+  /// The subscriber digits, with the country code and any national trunk
+  /// prefix already removed (e.g. `241234567` for `+233241234567`).
+  String? nationalNumber;
+
+  RegionInfo({
+    this.regionPrefix,
+    this.isoCode,
+    this.formattedPhoneNumber,
+    this.nationalNumber,
+  });
 
   RegionInfo.fromJson(Map<String, dynamic> json) {
     regionPrefix = json['regionCode'];
     isoCode = json['isoCode'];
     formattedPhoneNumber = json['formattedPhoneNumber'];
+    nationalNumber = json['nationalNumber'];
   }
 
   Map<String, dynamic> toJson() {
-    final Map<String, dynamic> data = new Map<String, dynamic>();
-    data['regionCode'] = this.regionPrefix;
-    data['isoCode'] = this.isoCode;
-    data['formattedPhoneNumber'] = this.formattedPhoneNumber;
-    return data;
+    return <String, dynamic>{
+      'regionCode': regionPrefix,
+      'isoCode': isoCode,
+      'formattedPhoneNumber': formattedPhoneNumber,
+      'nationalNumber': nationalNumber,
+    };
   }
 
   @override
   String toString() {
-    return '[RegionInfo prefix=$regionPrefix, iso=$isoCode, formatted=$formattedPhoneNumber]';
+    return '[RegionInfo prefix=$regionPrefix, iso=$isoCode, formatted=$formattedPhoneNumber, national=$nationalNumber]';
   }
 }
 

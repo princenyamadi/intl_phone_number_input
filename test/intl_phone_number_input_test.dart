@@ -256,8 +256,12 @@ void main() {
         isoCode: 'US',
       );
 
+      // parseNumber() returns the national significant number: separators
+      // removed and the country code dropped. It previously did a textual
+      // replaceAll of the dial code, which left the leading '-' behind and
+      // deleted every other '1' in the number.
       final parsed = phoneNumber.parseNumber();
-      expect(parsed, equals('-555-123-4567'));
+      expect(parsed, equals('5551234567'));
     });
 
     test("Should handle phone numbers with country code variations", () {

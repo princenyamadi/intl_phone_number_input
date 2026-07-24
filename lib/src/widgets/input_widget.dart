@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:collection/collection.dart' show IterableExtension;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl_phone_number_input/src/models/country_list.dart';
@@ -7,10 +8,12 @@ import 'package:intl_phone_number_input/src/models/country_model.dart';
 import 'package:intl_phone_number_input/src/providers/country_provider.dart';
 import 'package:intl_phone_number_input/src/utils/country_hints.dart';
 import 'package:intl_phone_number_input/src/utils/formatter/as_you_type_formatter.dart';
+import 'package:intl_phone_number_input/src/utils/formatter/digit_limiting_formatter.dart';
 import 'package:intl_phone_number_input/src/utils/phone_number.dart';
 import 'package:intl_phone_number_input/src/utils/phone_number/phone_number_util.dart';
 import 'package:intl_phone_number_input/src/utils/selector_config.dart';
 import 'package:intl_phone_number_input/src/utils/test/test_helper.dart';
+import 'package:intl_phone_number_input/src/utils/trunk_prefix.dart';
 import 'package:intl_phone_number_input/src/utils/util.dart';
 import 'package:intl_phone_number_input/src/utils/widget_view.dart';
 import 'package:intl_phone_number_input/src/widgets/selector_button.dart';
@@ -353,6 +356,17 @@ class InternationalPhoneNumberInput extends StatefulWidget {
   /// ```
   final String? hintCharacter;
 
+  /// Whether to automatically drop a national trunk prefix from input.
+  ///
+  /// When true (the default), typing or pasting a number in the local form
+  /// most countries publish — a Ghanaian `0241234567` — corrects it to the
+  /// international subscriber form `241234567` as soon as the prefix is
+  /// unambiguously redundant. Partially typed input is never altered.
+  ///
+  /// This is metadata-driven and applies to every country that declares a
+  /// national dialling prefix; see `docs/national-trunk-prefixes.md`.
+  final bool stripNationalPrefix;
+
   InternationalPhoneNumberInput(
       {Key? key,
       this.selectorConfig = const SelectorConfig(),
@@ -392,6 +406,7 @@ class InternationalPhoneNumberInput extends StatefulWidget {
       this.focusNode,
       this.cursorColor,
       this.autofillHints,
+      this.stripNationalPrefix = true,
       this.countries})
       : super(key: key);
 
@@ -434,7 +449,7 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
   void didUpdateWidget(InternationalPhoneNumberInput oldWidget) {
     loadCountries(previouslySelectedCountry: country);
     if (oldWidget.initialValue?.hash != widget.initialValue?.hash) {
-      if (country!.alpha2Code != widget.initialValue?.isoCode) {
+      if (country?.alpha2Code != widget.initialValue?.isoCode) {
         loadCountries();
       }
       initialiseWidget();
@@ -442,24 +457,47 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
     super.didUpdateWidget(oldWidget);
   }
 
-  /// [initialiseWidget] sets initial values of the widget
+  /// [initialiseWidget] sets initial values of the widget.
+  ///
+  /// The initial value is resolved through [PhoneNumber.fromRaw], so a raw
+  /// backend value in any shape — `+233241234567`, `233241234567`,
+  /// `0241234567`, `024 123 4567` — is split correctly into the country
+  /// selector and the subscriber digits shown in the field.
   void initialiseWidget() async {
-    if (widget.initialValue != null) {
-      if (widget.initialValue!.phoneNumber != null &&
-          widget.initialValue!.phoneNumber!.isNotEmpty &&
-          (await PhoneNumberUtil.isValidNumber(
-              phoneNumber: widget.initialValue!.phoneNumber!,
-              isoCode: widget.initialValue!.isoCode!))!) {
-        String phoneNumber =
-            await PhoneNumber.getParsableNumber(widget.initialValue!);
+    final PhoneNumber? initial = widget.initialValue;
+    if (initial == null) return;
 
-        controller!.text = widget.formatInput
-            ? phoneNumber
-            : phoneNumber.replaceAll(RegExp(r'[^\d+]'), '');
+    final String? raw = initial.phoneNumber;
+    if (raw == null || raw.isEmpty) return;
 
-        phoneNumberControllerListener();
+    // Re-resolve rather than trusting the caller's isoCode/dialCode: the raw
+    // value may name a different country than the widget currently shows.
+    final PhoneNumber resolved =
+        PhoneNumber.fromRaw(raw, defaultIsoCode: initial.isoCode) ?? initial;
+
+    // Move the selector to the number's own country before filling the field,
+    // otherwise a foreign number renders under the wrong dial code.
+    final String? resolvedIso = resolved.isoCode;
+    if (resolvedIso != null && resolvedIso != country?.alpha2Code) {
+      final Country? match = countries
+          .firstWhereOrNull((element) => element.alpha2Code == resolvedIso);
+      if (match != null) {
+        setState(() => country = match);
+        _formatHintText();
       }
     }
+
+    // Populate even when the number does not validate — showing the user a
+    // wrong number they can correct beats silently blanking the field.
+    final String national = widget.formatInput
+        ? resolved.formattedNationalNumber
+        : resolved.nationalNumber;
+
+    controller!.text = widget.formatInput
+        ? national
+        : national.replaceAll(RegExp(r'[^\d+]'), '');
+
+    phoneNumberControllerListener();
   }
 
   /// loads countries from [Countries.countryList] and selected Country
@@ -518,7 +556,7 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
   void phoneNumberControllerListener() {
     if (this.mounted) {
       String parsedPhoneNumberString =
-          controller!.text.replaceAll(RegExp(r'[^\d+]'), '');
+          _normalisedSubscriberDigits(controller!.text);
 
       getParsedPhoneNumber(parsedPhoneNumberString, this.country?.alpha2Code)
           .then((phoneNumber) {
@@ -637,10 +675,19 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
     phoneNumberControllerListener();
   }
 
+  /// Strips separators and, where it applies, the national trunk prefix, so
+  /// the value reported to callers is always the international subscriber
+  /// form — never `+2330241234567`.
+  String _normalisedSubscriberDigits(String text) {
+    final String digits = text.replaceAll(RegExp(r'[^\d+]'), '');
+    if (!widget.stripNationalPrefix) return digits;
+    return TrunkPrefix.strip(digits, country?.alpha2Code);
+  }
+
   void _phoneNumberSaved() {
     if (this.mounted) {
       String parsedPhoneNumberString =
-          controller!.text.replaceAll(RegExp(r'[^\d+]'), '');
+          _normalisedSubscriberDigits(controller!.text);
 
       String phoneNumber =
           '${this.country?.dialCode ?? ''}' + parsedPhoneNumberString;
@@ -734,11 +781,15 @@ class _InputWidgetView
               onSaved: state.onSaved,
               scrollPadding: widget.scrollPadding,
               inputFormatters: [
-                LengthLimitingTextInputFormatter(widget.maxLength),
+                // Limit by digits, not characters: formatted numbers carry
+                // separators, and counting those clips long national numbers
+                // (GB, DE) well before their real length.
+                DigitLimitingTextInputFormatter(widget.maxLength),
                 widget.formatInput
                     ? AsYouTypeFormatter(
                         isoCode: countryCode,
                         dialCode: dialCode,
+                        stripNationalPrefix: widget.stripNationalPrefix,
                         onInputFormatted: (TextEditingValue value) {
                           state.controller!.value = value;
                         },

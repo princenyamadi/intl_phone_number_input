@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:intl_phone_number_input/src/utils/phone_number/phone_number_util.dart';
+import 'package:intl_phone_number_input/src/utils/trunk_prefix.dart';
 
 typedef OnInputFormatted<T> = void Function(T value);
 
@@ -26,10 +27,17 @@ class AsYouTypeFormatter extends TextInputFormatter {
   /// [onInputFormatted] is a callback that passes the formatted phone number
   final OnInputFormatted<TextEditingValue> onInputFormatted;
 
+  /// Whether to drop a national trunk prefix as soon as it is unambiguously
+  /// redundant — a Ghanaian `0241234567` becomes `241234567`.
+  ///
+  /// See [TrunkPrefix] for the countries this affects and the safety rules.
+  final bool stripNationalPrefix;
+
   AsYouTypeFormatter(
       {required this.isoCode,
       required this.dialCode,
-      required this.onInputFormatted});
+      required this.onInputFormatted,
+      this.stripNationalPrefix = true});
 
   @override
   TextEditingValue formatEditUpdate(
@@ -55,6 +63,17 @@ class AsYouTypeFormatter extends TextInputFormatter {
 
         digitsBeforeCursor = rawTextBeforeCursor.length;
         digitsAfterCursor = rawTextAfterCursor.length;
+      }
+
+      if (stripNationalPrefix) {
+        final String corrected = TrunkPrefix.strip(rawText, isoCode);
+        if (corrected.length < rawText.length) {
+          // Keep the caret over the same digit it was over before the
+          // prefix vanished from in front of it.
+          digitsBeforeCursor =
+              max(0, digitsBeforeCursor - (rawText.length - corrected.length));
+          rawText = corrected;
+        }
       }
 
       String textToParse = dialCode + rawText;
