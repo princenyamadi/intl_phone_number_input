@@ -39,6 +39,17 @@ class AsYouTypeFormatter extends TextInputFormatter {
       required this.onInputFormatted,
       this.stripNationalPrefix = true});
 
+  /// The prefix to parse against: libphonenumber's country calling code for
+  /// [isoCode], falling back to [dialCode] only when the region is unknown.
+  ///
+  /// [dialCode] cannot be used directly. For NANP territories the country list
+  /// folds the area code into it (`+1876` for Jamaica) while the digits the
+  /// user types already start with `876`, so prefixing with [dialCode] feeds
+  /// libphonenumber `+18768762101234` — unformattable, and re-doubled on every
+  /// subsequent keystroke.
+  String get _parsePrefix =>
+      PhoneNumberUtil.callingCodeForIso(isoCode) ?? dialCode;
+
   @override
   TextEditingValue formatEditUpdate(
       TextEditingValue oldValue, TextEditingValue newValue) {
@@ -76,7 +87,7 @@ class AsYouTypeFormatter extends TextInputFormatter {
         }
       }
 
-      String textToParse = dialCode + rawText;
+      String textToParse = _parsePrefix + rawText;
 
       formatAsYouType(input: textToParse).then(
         (String? value) {
@@ -138,30 +149,20 @@ class AsYouTypeFormatter extends TextInputFormatter {
   }
 
   /// Accepts a formatted [phoneNumber]
-  /// returns a [String] of `phoneNumber` with the dialCode replaced with an empty String
+  /// returns a [String] of `phoneNumber` with the calling code removed, so the
+  /// field shows the national part while the selector supplies the country.
   String parsePhoneNumber(String? phoneNumber) {
     final filteredPhoneNumber =
-        phoneNumber?.replaceAll(bracketsBetweenDigitsOrSpace, '');
+        phoneNumber?.replaceAll(bracketsBetweenDigitsOrSpace, '') ?? '';
 
-    if (dialCode.length > 4) {
-      if (isPartOfNorthAmericanNumberingPlan(dialCode)) {
-        String northAmericaDialCode = '+1';
-        String countryDialCodeWithSpace = northAmericaDialCode +
-            ' ' +
-            dialCode.replaceFirst(northAmericaDialCode, '');
-
-        return filteredPhoneNumber!
-            .replaceFirst(countryDialCodeWithSpace, '')
-            .replaceFirst(separatorChars, '')
-            .trim();
-      }
+    // Anchored: the calling code is only ever a prefix, and an unanchored
+    // replace corrupts numbers whose own digits repeat it (+1 234-598-7327).
+    if (!filteredPhoneNumber.startsWith(_parsePrefix)) {
+      return filteredPhoneNumber.trim();
     }
-    return filteredPhoneNumber!.replaceFirst(dialCode, '').trim();
-  }
-
-  /// Accepts a [dialCode]
-  /// returns a [bool], true if the `dialCode` is part of North American Numbering Plan
-  bool isPartOfNorthAmericanNumberingPlan(String dialCode) {
-    return dialCode.contains('+1');
+    return filteredPhoneNumber
+        .substring(_parsePrefix.length)
+        .replaceFirst(RegExp('^${separatorChars.pattern}'), '')
+        .trim();
   }
 }

@@ -4,6 +4,21 @@ import 'package:intl_phone_number_input/src/utils/phone_number.dart';
 class PhoneNumberUtil {
   static p.PhoneNumberUtil phoneUtil = p.PhoneNumberUtil.instance;
 
+  /// The country calling code for [isoCode], with a leading `+`, or `null` when
+  /// the region is unknown.
+  ///
+  /// Use this — never `Country.dialCode` — when assembling an E.164 number by
+  /// concatenation. The country list records `+1876` for Jamaica, `+1868` for
+  /// Trinidad and so on, folding the NANP area code into the "dial code". The
+  /// national significant number already begins with that area code, so
+  /// `dialCode + nsn` yields `+18768762101234` and fails to validate. The
+  /// calling code here is a plain `+1` for every NANP member.
+  static String? callingCodeForIso(String? isoCode) {
+    if (isoCode == null || isoCode.isEmpty) return null;
+    final int code = phoneUtil.getCountryCodeForRegion(isoCode.toUpperCase());
+    return code == 0 ? null : '+$code';
+  }
+
   /// [isValidNumber] checks if a [phoneNumber] is valid.
   /// Accepts [phoneNumber] and [isoCode]
   /// Returns [Future<bool>].

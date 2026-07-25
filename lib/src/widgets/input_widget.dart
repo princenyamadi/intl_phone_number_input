@@ -423,12 +423,49 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
   bool isNotValid = true;
   String? _hintText;
 
+  /// Whether [controller] was created here and so must be disposed here.
+  bool _ownsController = false;
+
+  /// Last text the listener acted on, so caret moves — which also notify
+  /// [TextEditingController] listeners — don't re-run validation.
+  String? _lastValidatedText;
+
   @override
   void initState() {
     super.initState();
     loadCountries();
-    controller = widget.textFieldController ?? TextEditingController();
+    _attachController();
     initialiseWidget();
+  }
+
+  @override
+  void dispose() {
+    _detachController();
+    super.dispose();
+  }
+
+  void _attachController() {
+    controller = widget.textFieldController ?? TextEditingController();
+    _ownsController = widget.textFieldController == null;
+    controller!.addListener(_onControllerChanged);
+  }
+
+  void _detachController() {
+    controller?.removeListener(_onControllerChanged);
+    if (_ownsController) controller?.dispose();
+  }
+
+  /// Revalidates when the text changes by any route.
+  ///
+  /// Writing to a [TextEditingController] runs neither `inputFormatters` nor
+  /// `onChanged`, so without this a caller that prepopulates the field —
+  /// `controller.text = '2345987327'` — leaves [widget.onInputChanged] never
+  /// fired and the number reported invalid until the user types into it.
+  void _onControllerChanged() {
+    final String text = controller?.text ?? '';
+    if (text == _lastValidatedText) return;
+    _lastValidatedText = text;
+    phoneNumberControllerListener();
   }
 
   @override
@@ -447,6 +484,10 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
 
   @override
   void didUpdateWidget(InternationalPhoneNumberInput oldWidget) {
+    if (widget.textFieldController != oldWidget.textFieldController) {
+      _detachController();
+      _attachController();
+    }
     loadCountries(previouslySelectedCountry: country);
     if (oldWidget.initialValue?.hash != widget.initialValue?.hash) {
       if (country?.alpha2Code != widget.initialValue?.isoCode) {
@@ -465,15 +506,23 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
   /// selector and the subscriber digits shown in the field.
   void initialiseWidget() async {
     final PhoneNumber? initial = widget.initialValue;
-    if (initial == null) return;
+    final String? raw = initial?.phoneNumber;
 
-    final String? raw = initial.phoneNumber;
-    if (raw == null || raw.isEmpty) return;
+    if (raw == null || raw.isEmpty) {
+      // No initial value, but the caller may have written into the controller
+      // before this widget mounted. Validate what is already there rather than
+      // reporting a prepopulated number invalid until the user touches it.
+      if (controller!.text.isNotEmpty) {
+        _lastValidatedText = controller!.text;
+        phoneNumberControllerListener();
+      }
+      return;
+    }
 
     // Re-resolve rather than trusting the caller's isoCode/dialCode: the raw
     // value may name a different country than the widget currently shows.
     final PhoneNumber resolved =
-        PhoneNumber.fromRaw(raw, defaultIsoCode: initial.isoCode) ?? initial;
+        PhoneNumber.fromRaw(raw, defaultIsoCode: initial!.isoCode) ?? initial;
 
     // Move the selector to the number's own country before filling the field,
     // otherwise a foreign number renders under the wrong dial code.
@@ -561,8 +610,7 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
       getParsedPhoneNumber(parsedPhoneNumberString, this.country?.alpha2Code)
           .then((phoneNumber) {
         if (phoneNumber == null) {
-          String phoneNumber =
-              '${this.country?.dialCode}$parsedPhoneNumberString';
+          String phoneNumber = '$_callingCode$parsedPhoneNumberString';
 
           if (widget.onInputChanged != null) {
             widget.onInputChanged!(PhoneNumber(
@@ -639,11 +687,6 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
     return value;
   }
 
-  /// Validate the phone number when a change occurs
-  void onChanged(String value) {
-    phoneNumberControllerListener();
-  }
-
   /// Validate and returns a validation error when [FormState] validate is called.
   ///
   /// Also updates [selectorButtonBottomPadding]
@@ -675,6 +718,16 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
     phoneNumberControllerListener();
   }
 
+  /// The prefix to build an E.164 number with.
+  ///
+  /// Not [Country.dialCode]: the country list folds the NANP area code into it
+  /// (`+1876` for Jamaica) while the subscriber digits already start with that
+  /// area code, so concatenating the two doubles it.
+  String get _callingCode =>
+      PhoneNumberUtil.callingCodeForIso(country?.alpha2Code) ??
+      country?.dialCode ??
+      '';
+
   /// Strips separators and, where it applies, the national trunk prefix, so
   /// the value reported to callers is always the international subscriber
   /// form — never `+2330241234567`.
@@ -689,8 +742,7 @@ class _InputWidgetState extends State<InternationalPhoneNumberInput> {
       String parsedPhoneNumberString =
           _normalisedSubscriberDigits(controller!.text);
 
-      String phoneNumber =
-          '${this.country?.dialCode ?? ''}' + parsedPhoneNumberString;
+      String phoneNumber = '$_callingCode$parsedPhoneNumberString';
 
       widget.onSaved?.call(
         PhoneNumber(
@@ -796,7 +848,6 @@ class _InputWidgetView
                       )
                     : FilteringTextInputFormatter.digitsOnly,
               ],
-              onChanged: state.onChanged,
             ),
           )
         ],
